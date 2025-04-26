@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css" />
+    <style>
+      .card-text {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 4;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <section class="py-5 text-center container">
+      <div class="row py-lg-5">
+        <div class="col-lg-6 col-md-8 mx-auto">
+          <h1 class="fw-light">RSS feeds</h1>
+          <p class="lead text-muted">Click to load feed</p>
+          <p>(NB! First load could sometimes take a while and is triggered automatically)</p>
+          <p>
+            I assume the FT feed URL is intentionally not meant to work to showcase the error state (returns HTML instead of XML), as such, I've left the original FT URL but also added a working FT
+            URL just in case.
+          </p>
+          <div class="btn-group">
+            <a href="#" class="btn btn-outline-secondary" data-url="https://feeds.bbci.co.uk/news/rss.xml">BBC News</a>
+            <a href="#" class="btn btn-outline-secondary" data-url="https://www.buzzfeed.com/uk/index.xml">Buzzfeed</a>
+            <a href="#" class="btn btn-primary" data-url="https://fliplet.com/feed">Fliplet</a>
+            <a href="#" class="btn btn-outline-secondary" data-url="https://www.ft.com/news-feed">FT (error version)</a>
+            <a href="#" class="btn btn-outline-secondary" data-url="https://www.ft.com/news-feed?format=rss">FT</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pagination -->
+    <section class="py-5 text-center container">
+      <div class="row py-lg-5">
+        <nav>
+          <ul class="pagination"></ul>
+        </nav>
+      </div>
+    </section>
+
+    <div class="container">
+      <!-- Loading state UI -->
+      <div id="loader" class="alert alert-secondary visually-hidden">Loading...</div>
+
+      <!-- Error state UI -->
+      <div id="error-container" class="alert alert-danger visually-hidden">
+        <h5>Unable to load feed</h5>
+        <!-- Show error message, if applicable -->
+        <span id="error-message">Feed could not be converted, probably not a valid RSS feed.</span>
+        <br />
+        <small><a id="error-link" href="#" target="_blank">Open feed in a new tab</a></small>
+      </div>
+
+      <!-- Feed (Show no more than 5 posts per page) -->
+      <div id="feed" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3"></div>
+    </div>
+
+    <!-- Pagination -->
+    <section class="py-5 text-center container">
+      <div class="row py-lg-5">
+        <nav>
+          <ul class="pagination"></ul>
+        </nav>
+      </div>
+    </section>
+
+    <!-- Handlebars templates -->
+    <script id="col-template" type="text/x-handlebars-template">
+      <!-- Blog title -->
+      <div class="col">
+        <div class="card shadow-sm">
+          <!-- Post thumbnail, if available -->
+          {{#if img}}
+            <img src="{{img}}" />
+          {{/if}}
+          <div class="card-body">
+            <!-- Post title -->
+            <h5>{{title}}</h5>
+            <!-- Post description -->
+            <p class="card-text">
+              <small>{{desc}}</small>
+            </p>
+            <p><a href="{{link}}" target="_blank">Read more &rarr;</a></p>
+            <div class="d-flex justify-content-between align-items-center">
+              <!-- Format date appropriately as per browser/device region format -->
+              <small class="text-muted">{{date}}</small>
+            </div>
+          </div>
+        </div>
+      </div>
+    </script>
+
+    <script id="page-link-template" type="text/x-handlebars-template">
+      <li class="page-item {{#if disabled}}disabled{{/if}} {{#if active}}active{{/if}}">
+        <a class="page-link" href="#">{{text}}</a>
+      </li>
+    </script>
+
+    <!-- Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.7.8/handlebars.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+    <script src="https://unpkg.com/rss-parser/dist/rss-parser.min.js"></script>
+
+    <script>
+      $(function () {
+        /* State */
+        const state = {
+          feeds: {},
+          currentFeedUrl: "",
+          currentPage: 1,
+          postsPerPage: 5,
+          loading: false,
+          error: null,
+        };
+
+        let currentRequest = null;
+
+        /* Parser Setup */
+        const parser = new RSSParser();
+
+        /* Selectors */
+        const $feedSelectors = $(".btn-group");
+        const $feed = $("#feed");
+        const $pagination = $(".pagination");
+        const $loader = $("#loader");
+        const $errorContainer = $("#error-container");
+        const $errorMessage = $("#error-message");
+        const $errorLink = $("#error-link");
+
+        /* Templates */
+        const colTemplate = Handlebars.compile($("#col-template").html());
+        const pageLinkTemplate = Handlebars.compile($("#page-link-template").html());
+
+        function updateState(newState) {
+          Object.assign(state, newState);
+          renderBasedOnState();
+        }
+
+        /* Renderers */
+        function renderBasedOnState() {
+          if (state.loading) {
+            renderLoading();
+            return;
+          }
+
+          if (state.error) {
+            renderError();
+            return;
+          }
+
+          renderFeed();
+        }
+
+        function renderLoading() {
+          $loader.removeClass("visually-hidden");
+          $errorContainer.addClass("visually-hidden");
+          $feed.empty();
+          $pagination.empty();
+        }
+
+        function renderError() {
+          $loader.addClass("visually-hidden");
+          $errorContainer.removeClass("visually-hidden");
+          $errorMessage.text(state.error || "Feed could not be loaded.");
+          $errorLink.attr("href", state.currentFeedUrl || "");
+          $feed.empty();
+          $pagination.empty();
+        }
+
+        function renderFeed() {
+          $loader.addClass("visually-hidden");
+          $errorContainer.addClass("visually-hidden");
+
+          const feedPosts = state.feeds[state.currentFeedUrl] || [];
+          const totalPostsCount = feedPosts.length;
+
+          /* If no posts, display no posts found message */
+          if (totalPostsCount === 0) {
+            $feed.html("<div class='text-muted'>No posts found.</div>");
+            $pagination.empty();
+            return;
+          }
+
+          const totalPages = Math.max(1, Math.ceil(totalPostsCount / state.postsPerPage));
+          const startIndex = (state.currentPage - 1) * state.postsPerPage;
+          const postsToDisplay = feedPosts.slice(startIndex, startIndex + state.postsPerPage);
+
+          /** Sanitizing and formatting posts */
+          const postsHTML = postsToDisplay
+            .map((post) =>
+              colTemplate({
+                title: _.escape(post.title),
+                desc: _.escape(post.contentSnippet || "").slice(0, 120) + "…",
+                link: post.link,
+                img: (post.enclosure && post.enclosure.url) || null,
+                date: moment(post.isoDate || post.pubDate).format("ll"),
+              })
+            )
+            .join("");
+
+          $feed.html(postsHTML);
+          renderPagination(totalPostsCount);
+        }
+
+        function renderPagination(totalPostsCount) {
+          const totalPages = Math.ceil(totalPostsCount / state.postsPerPage);
+          const currentPage = state.currentPage;
+
+          const isFirstPage = currentPage === 1;
+          const isLastPage = currentPage === totalPages;
+
+          function createPageButton(text, active = false, disabled = false) {
+            return pageLinkTemplate({ text, active, disabled });
+          }
+
+          const prevButton = createPageButton("Previous", false, isFirstPage);
+          const nextButton = createPageButton("Next", false, isLastPage);
+          const pageButtons = [];
+
+          for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+            const isActivePage = pageNumber === currentPage;
+            const stringifiedPageNumber = String(pageNumber); // for Handlebars
+            pageButtons.push(createPageButton(stringifiedPageNumber, isActivePage));
+          }
+
+          const buttonsHTML = [prevButton, ...pageButtons, nextButton].join("");
+          $pagination.html(buttonsHTML);
+        }
+
+        function highlightButton($selectedFeedButton) {
+          $feedSelectors.find("a").removeClass("btn-primary active").addClass("btn-outline-secondary");
+          $selectedFeedButton.removeClass("btn-outline-secondary").addClass("btn-primary active");
+        }
+
+        /* Event Listener for feed selection */
+        $feedSelectors.on("click", "a", function (e) {
+          e.preventDefault();
+
+          /* Extract relevant data for feed loading */
+          const $selectedFeedButton = $(this);
+          const feedUrl = $selectedFeedButton.data("url");
+
+          /* Prevent reloading same feed */
+          if (feedUrl == state.currentFeedUrl) {
+            return;
+          }
+
+          /** Highlight selected feed button */
+          highlightButton($selectedFeedButton);
+
+          /* Update & reset state */
+          state.currentFeedUrl = feedUrl;
+          state.currentPage = 1;
+          state.loading = true;
+          state.error = null;
+
+          /* Load feed */
+          loadFeed(feedUrl);
+        });
+
+        /* Event Listener for pagination */
+        $pagination.on("click", "a", function (e) {
+          e.preventDefault();
+
+          const buttonText = $(this).text();
+          const feedPosts = state.feeds[state.currentFeedUrl] || [];
+          const totalPages = Math.max(1, Math.ceil(feedPosts.length / state.postsPerPage));
+          const currentPage = state.currentPage;
+
+          if (buttonText === "Previous" && currentPage > 1) {
+            updateState({ currentPage: currentPage - 1 });
+          } else if (buttonText === "Next" && currentPage < totalPages) {
+            updateState({ currentPage: currentPage + 1 });
+          } else {
+            const pageNumber = Number(buttonText);
+            if (!isNaN(pageNumber) && pageNumber > 0 && pageNumber <= totalPages) {
+              updateState({ currentPage: pageNumber });
+            }
+          }
+        });
+
+        async function fetchFeed(feedUrl) {
+          /* Proxy url to get around CORS */
+          const proxyUrl = "https://api.allorigins.win/get?url=" + encodeURIComponent(feedUrl);
+
+          try {
+            currentRequest = $.ajax({ url: proxyUrl, dataType: "json" });
+            const response = await currentRequest;
+
+            if (!response || !response.contents) {
+              throw new Error("Invalid response structure");
+            }
+
+            /** Parse RSS feed XML into usable structure */
+            const parsed = await parser.parseString(response.contents);
+            return parsed.items;
+          } finally {
+            currentRequest = null;
+          }
+        }
+
+        async function loadFeed(feedUrl) {
+          /* Abort any previous requests */
+          if (currentRequest && currentRequest.readyState !== 4) {
+            currentRequest.abort();
+          }
+
+          /* Initiate loading */
+          updateState({ loading: true, error: null, currentPage: 1 });
+
+          try {
+            if (!state.feeds[feedUrl]) {
+              /** Get feed contents and store it in state for re-use */
+              state.feeds[feedUrl] = await fetchFeed(feedUrl);
+            } else {
+              /* To demonstrate we're not fetching the same feed twice */
+              console.log("Feed already loaded, skipping fetch");
+            }
+            updateState({ loading: false });
+          } catch (error) {
+            /* Already setting loading to false in case abort leads to early return */
+            updateState({ loading: false });
+
+            /* To keep feed loading fast in case of slow network and rapid feed switching */
+            if (error.statusText === "abort") {
+              console.log("Aborted previous request, the error: ", error);
+              return;
+            }
+            updateState({ error: error.message || "Unknown error" });
+          }
+        }
+
+        /* Load default feed immediately upon page load based on btn-primary */
+        $(".btn-group .btn-primary").trigger("click");
+      });
+    </script>
+  </body>
+</html>
