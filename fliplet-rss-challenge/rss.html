@@ -8,6 +8,7 @@
         display: -webkit-box;
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 4;
+        line-clamp: 4;
         overflow: hidden;
       }
     </style>
@@ -19,15 +20,14 @@
         <div class="col-lg-6 col-md-8 mx-auto">
           <h1 class="fw-light">RSS feeds</h1>
           <p class="lead text-muted">Click to load feed</p>
-          <p>(I set BBC as default to load, as ran into CORS issues with Fliplet where it showed 50/50 times)</p>
+          <p>(First load is triggered automatically and could take a few seconds.)</p>
           <p>
-            I assume the FT feed URL is intentionally not meant to work to showcase the error state (returns HTML instead of XML), as such, I've left the original FT URL but also added a working FT
-            URL just in case.
+            I assume the FT feed URL is intentionally not meant to work to showcase the error state, as such, I've left the original FT URL but also added a working FT URL meant for their RSS feed.
           </p>
           <div class="btn-group">
-            <a href="#" class="btn btn-primary" data-url="https://feeds.bbci.co.uk/news/rss.xml">BBC News</a>
+            <a href="#" class="btn btn-outline-secondary" data-url="https://feeds.bbci.co.uk/news/rss.xml">BBC News</a>
             <a href="#" class="btn btn-outline-secondary" data-url="https://www.buzzfeed.com/uk/index.xml">Buzzfeed</a>
-            <a href="#" class="btn btn-outline-secondary" data-url="https://fliplet.com/feed">Fliplet</a>
+            <a href="#" class="btn btn-primary" data-url="https://fliplet.com/feed">Fliplet</a>
             <a href="#" class="btn btn-outline-secondary" data-url="https://www.ft.com/news-feed">FT (error version)</a>
             <a href="#" class="btn btn-outline-secondary" data-url="https://www.ft.com/news-feed?format=rss">FT</a>
           </div>
@@ -142,12 +142,29 @@
         const colTemplate = Handlebars.compile($("#col-template").html());
         const pageLinkTemplate = Handlebars.compile($("#page-link-template").html());
 
+        function highlightButton($selectedFeedButton) {
+          $feedSelectors.find("a").removeClass("btn-primary active").addClass("btn-outline-secondary");
+          $selectedFeedButton.removeClass("btn-outline-secondary").addClass("btn-primary active");
+        }
+
+        /* Helpers */
+        function extractAJAXError(error) {
+          switch (error.statusText) {
+            case "parsererror":
+              return "Couldn't read the RSS feed, possibly not a valid RSS feed.";
+            case "error":
+              return error.status === 0 ? "Network error or CORS was blocked." : `Server HTTP response: ${error.status}.`;
+            default:
+              return "RIP";
+          }
+        }
+
+        /* Renderers */
         function updateState(newState) {
           Object.assign(state, newState);
           renderBasedOnState();
         }
 
-        /* Renderers */
         function renderBasedOnState() {
           if (state.loading) {
             renderLoading();
@@ -239,88 +256,13 @@
           $pagination.html(buttonsHTML);
         }
 
-        function highlightButton($selectedFeedButton) {
-          $feedSelectors.find("a").removeClass("btn-primary active").addClass("btn-outline-secondary");
-          $selectedFeedButton.removeClass("btn-outline-secondary").addClass("btn-primary active");
-        }
-
-        /* Event Listener for feed selection */
-        $feedSelectors.on("click", "a", function (e) {
-          e.preventDefault();
-
-          /* Extract relevant data for feed loading */
-          const $selectedFeedButton = $(this);
-          const feedUrl = $selectedFeedButton.data("url");
-
-          /* Prevent reloading same feed */
-          if (feedUrl == state.currentFeedUrl) {
-            return;
-          }
-
-          /** Highlight selected feed button */
-          highlightButton($selectedFeedButton);
-
-          /* Update & reset state */
-          state.currentFeedUrl = feedUrl;
-          state.currentPage = 1;
-          state.loading = true;
-          state.error = null;
-
-          /* Load feed */
-          loadFeed(feedUrl);
-        });
-
-        /* Event Listener for pagination */
-        $pagination.on("click", "a", function (e) {
-          e.preventDefault();
-
-          const buttonText = $(this).text();
-          const feedPosts = state.feeds[state.currentFeedUrl] || [];
-          const totalPages = Math.max(1, Math.ceil(feedPosts.length / state.postsPerPage));
-          const currentPage = state.currentPage;
-
-          if (buttonText === "Previous" && currentPage > 1) {
-            updateState({ currentPage: currentPage - 1 });
-          } else if (buttonText === "Next" && currentPage < totalPages) {
-            updateState({ currentPage: currentPage + 1 });
-          } else {
-            const pageNumber = Number(buttonText);
-            if (!isNaN(pageNumber) && pageNumber > 0 && pageNumber <= totalPages) {
-              updateState({ currentPage: pageNumber });
-            }
-          }
-        });
-
-        async function fetchFeed(feedUrl) {
-          /* Proxy url to get around CORS */
-          const proxyUrl = "https://api.allorigins.win/get?url=" + encodeURIComponent(feedUrl);
-
-          try {
-            currentRequest = $.ajax({ url: proxyUrl, dataType: "json" });
-            const response = await currentRequest;
-
-            if (!response || !response.contents) {
-              throw new Error("Invalid response structure");
-            }
-
-            /** Parse RSS feed XML into usable structure */
-            const parsed = await parser.parseString(response.contents);
-            return parsed.items;
-          } finally {
-            currentRequest = null;
-          }
-        }
-
         async function loadFeed(feedUrl) {
           const requestId = ++requestCounter;
 
           /* Abort any previous requests */
-          if (currentRequest && currentRequest.readyState !== 4) {
+          if (currentRequest) {
             currentRequest.abort();
           }
-
-          /* Initiate loading */
-          updateState({ loading: true, error: null, currentPage: 1 });
 
           try {
             if (!state.feeds[feedUrl]) {
@@ -347,22 +289,88 @@
             }
           } catch (error) {
             /* To keep feed loading fast in case of slow network and rapid feed switching */
-            if (error.statusText === "abort") {
+            if (error && error.statusText === "abort") {
               console.log("Aborted previous request, the error: ", error);
-
-              /* Only clear loading state if it's the same request */
-              if (requestId === requestCounter) {
-                updateState({ loading: false });
-              }
               return;
             }
 
             /* Only clear loading state if it's the same request */
             if (requestId === requestCounter) {
-              updateState({ loading: false, error: error.message || "Unknown error" });
+              const isAJAXError = error && error.statusText;
+              const errorMessage = isAJAXError ? extractAJAXError(error) : error.message || "Unknown error";
+              updateState({ loading: false, error: errorMessage || "Unknown error" });
             }
           }
         }
+
+        async function fetchFeed(feedUrl) {
+          /* Proxy url to get around CORS */
+          const proxyUrl = "https://fliplet-rss-backend-9e3c94a427cf.herokuapp.com/rss?url=" + encodeURIComponent(feedUrl);
+
+          try {
+            currentRequest = $.ajax({ url: proxyUrl, dataType: "text" });
+            const XMLString = await currentRequest;
+
+            if (!XMLString) {
+              throw new Error("Empty response from proxy");
+            }
+
+            /** Parse RSS feed XML into usable structure */
+            const parsed = await parser.parseString(XMLString);
+            return parsed.items;
+          } finally {
+            currentRequest = null;
+          }
+        }
+
+        /* Event Listener for feed selection */
+        $feedSelectors.on("click", "a", function (e) {
+          e.preventDefault();
+
+          /* Extract relevant data for feed loading */
+          const $selectedFeedButton = $(this);
+          const feedUrl = $selectedFeedButton.data("url");
+
+          /* Prevent reloading same feed */
+          if (feedUrl == state.currentFeedUrl) {
+            return;
+          }
+
+          /** Highlight selected feed button */
+          highlightButton($selectedFeedButton);
+
+          /* Initiate loading and reset error state and page number */
+          updateState({
+            loading: !state.feeds[feedUrl], // Avoids theoretical UX flicker of loading state when feed already loaded
+            error: null,
+            currentPage: 1,
+            currentFeedUrl: feedUrl,
+          });
+
+          /* Load feed */
+          loadFeed(feedUrl);
+        });
+
+        /* Event Listener for pagination */
+        $pagination.on("click", "a", function (e) {
+          e.preventDefault();
+
+          const buttonText = $(this).text();
+          const feedPosts = state.feeds[state.currentFeedUrl] || [];
+          const totalPages = Math.max(1, Math.ceil(feedPosts.length / state.postsPerPage));
+          const currentPage = state.currentPage;
+
+          if (buttonText === "Previous" && currentPage > 1) {
+            updateState({ currentPage: currentPage - 1 });
+          } else if (buttonText === "Next" && currentPage < totalPages) {
+            updateState({ currentPage: currentPage + 1 });
+          } else {
+            const pageNumber = Number(buttonText);
+            if (!isNaN(pageNumber) && pageNumber > 0 && pageNumber <= totalPages) {
+              updateState({ currentPage: pageNumber });
+            }
+          }
+        });
 
         /* Load default feed immediately upon page load based on btn-primary */
         $(".btn-group .btn-primary").trigger("click");
