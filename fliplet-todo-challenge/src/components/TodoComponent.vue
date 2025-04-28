@@ -145,6 +145,7 @@ export default {
 <style scoped>
 li {
   margin: 8px 0;
+  list-style: none;
 }
 
 h2 {
